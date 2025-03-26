@@ -1,0 +1,12 @@
+[package]
+name = "sum3-solver"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = "0.31"
+egui = "0.31"
+csv = "1.3"
+rayon = "1.10"
+rfd = "0.14"
+crossbeam-channel = "0.5"
