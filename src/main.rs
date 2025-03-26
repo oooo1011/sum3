@@ -1,6 +1,6 @@
 use eframe::egui;
 use sum3_solver::{find_combinations, read_numbers_from_csv, read_numbers_from_txt};
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::thread;
 
 struct Sum3App {
@@ -14,7 +14,7 @@ struct Sum3App {
     computing: bool,
     show_all: bool,
     error: Option<String>,
-    cancel_sender: Option<mpsc::Sender<()>>,
+    stop_flag: Arc<AtomicBool>,
     shared_state: Arc<Mutex<(Vec<Vec<f64>>, f32, String, bool)>>,
 }
 
@@ -31,7 +31,7 @@ impl Default for Sum3App {
             computing: false,
             show_all: false,
             error: None,
-            cancel_sender: None,
+            stop_flag: Arc::new(AtomicBool::new(false)),
             shared_state: Arc::new(Mutex::new((Vec::new(), 0.0, "就绪".to_string(), false))),
         }
     }
@@ -51,12 +51,10 @@ impl eframe::App for Sum3App {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("数字组合求解器");
             
-            // 错误显示
             if let Some(err) = &self.error {
                 ui.colored_label(egui::Color32::RED, err);
             }
 
-            // 文件导入区域
             ui.horizontal(|ui| {
                 if ui.button("导入数字文件").clicked() {
                     if let Some(path) = rfd::FileDialog::new().pick_file() {
@@ -70,13 +68,16 @@ impl eframe::App for Sum3App {
                         match result {
                             Ok(nums) => {
                                 self.numbers = nums;
+                                println!("导入的数字: {:?}", self.numbers);  // 添加导入数字日志
                                 self.status = format!("已导入 {} 个数字", self.numbers.len());
                                 self.error = None;
-                                println!("成功导入 {} 个数字: {:?}", self.numbers.len(), self.numbers);
+                                // 强制更新UI状态
+                                let mut state = self.shared_state.lock().unwrap();
+                                state.2 = self.status.clone();
+                                ctx.request_repaint();
                             }
                             Err(e) => {
                                 self.error = Some(format!("导入错误: {}", e));
-                                eprintln!("导入错误: {}", e);
                             }
                         }
                     }
@@ -85,7 +86,6 @@ impl eframe::App for Sum3App {
                 ui.label(&self.status);
             });
 
-            // 参数设置区域
             ui.horizontal(|ui| {
                 ui.label("目标和:");
                 ui.text_edit_singleline(&mut self.target);
@@ -95,21 +95,19 @@ impl eframe::App for Sum3App {
                 ui.text_edit_singleline(&mut self.max_length);
             });
 
-            // 计算按钮
             ui.horizontal(|ui| {
                 if ui.button("开始计算").clicked() && !self.computing {
                     self.start_computation(ctx.clone());
                 }
                 if ui.button("停止计算").clicked() && self.computing {
                     self.stop_computation();
+                    println!("用户点击了停止按钮");
                 }
                 ui.checkbox(&mut self.show_all, "显示所有解");
             });
 
-            // 进度条
             ui.add(egui::ProgressBar::new(self.progress).text("计算进度"));
 
-            // 结果显示区域
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for (i, res) in self.results.iter().enumerate() {
                     if !self.show_all && i >= 1 {
@@ -167,81 +165,75 @@ impl Sum3App {
 
         let numbers = self.numbers.clone();
         let (tx, rx) = mpsc::channel();
-        let (cancel_tx, cancel_rx) = mpsc::channel();
-
-        // 保存取消通道以便停止计算
-        self.cancel_sender = Some(cancel_tx);
+        self.stop_flag.store(false, Ordering::Relaxed);
 
         let tx = Arc::new(Mutex::new(tx));
+        let stop_flag = self.stop_flag.clone();
+        let shared_state = self.shared_state.clone();
         
-        // 启动计算线程
-        let computation_thread = thread::spawn({
+        // 创建进度通道
+        let (progress_tx, progress_rx) = crossbeam_channel::unbounded();
+        let (result_tx, result_rx) = mpsc::channel();
+
+        // 计算线程
+        thread::spawn({
             let numbers = numbers.clone();
+            let stop_flag = stop_flag.clone();
+            move || {
+                println!("计算线程启动");
+                let results = find_combinations(
+                    &numbers,
+                    target,
+                    tolerance,
+                    Some(progress_tx.clone()),  // 确保通道不被移动
+                    max_length,
+                    stop_flag,
+                );
+                // 显式关闭进度通道
+                drop(progress_tx);
+                println!("计算完成，找到{}个解", results.len());
+                result_tx.send(results).unwrap();
+            }
+        });
+
+        // 进度更新线程
+        thread::spawn({
             let tx = tx.clone();
             move || {
-                let (progress_tx, progress_rx) = crossbeam_channel::unbounded();
-                let (result_tx, result_rx) = mpsc::channel();
-                
-                // 计算线程
-                thread::spawn({
-                    let numbers = numbers.clone();
-                    move || {
-                        println!("计算线程启动"); // 添加调试输出
-                        let results = find_combinations(
-                            &numbers,
-                            target,
-                            tolerance,
-                            Some(progress_tx),
-                            max_length,
-                        );
-                        println!("计算完成，找到{}个解", results.len()); // 添加调试输出
-                        result_tx.send(results).unwrap();
+                println!("进度线程启动");
+                while let Ok(progress) = progress_rx.recv() {
+                    println!("收到原始进度: {}", progress);
+                    let clamped_progress = progress.clamp(0.0, 1.0);
+                    println!("发送进度更新: {:.2}%", clamped_progress * 100.0);
+                    if let Err(_) = tx.lock().unwrap().send(ComputationMessage::Progress(clamped_progress)) {
+                        println!("进度通道已关闭");
+                        break;
                     }
-                });
-
-                // 进度更新线程
-                thread::spawn({
-                    let tx = tx.clone();
-                    move || {
-                        while let Ok(progress) = progress_rx.recv() {
-                            if let Err(_) = tx.lock().unwrap().send(ComputationMessage::Progress(progress)) {
-                                break;
-                            }
-                        }
-                    }
-                });
-
-                // 结果接收线程
-                thread::spawn({
-                    let tx = tx.clone();
-                    move || {
-                        if let Ok(results) = result_rx.recv() {
-                            let _ = tx.lock().unwrap().send(ComputationMessage::Results(results));
-                        }
-                    }
-                });
+                }
+                println!("进度线程结束");
             }
         });
 
-        // 取消监听线程
-        thread::spawn(move || {
-            if cancel_rx.recv().is_ok() {
-                computation_thread.thread().unpark();
+        // 结果接收线程
+        thread::spawn({
+            let tx = tx.clone();
+            move || {
+                if let Ok(results) = result_rx.recv() {
+                    let _ = tx.lock().unwrap().send(ComputationMessage::Results(results));
+                }
             }
         });
 
-        ctx.request_repaint_after(std::time::Duration::from_millis(100));
+        ctx.request_repaint_after(std::time::Duration::from_millis(50));
 
         enum ComputationMessage {
             Progress(f64),
             Results(Vec<Vec<f64>>),
         }
 
-        // 使用App结构体中的共享状态
-        let state_clone = self.shared_state.clone();
         thread::spawn(move || {
             while let Ok(msg) = rx.recv() {
-                let mut state = state_clone.lock().unwrap();
+                let mut state = shared_state.lock().unwrap();
                 match msg {
                     ComputationMessage::Progress(p) => {
                         state.1 = p as f32;
@@ -252,7 +244,6 @@ impl Sum3App {
                         state.1 = 1.0;
                         state.2 = format!("找到 {} 个解", state.0.len());
                         state.3 = false;
-                        println!("收到计算结果: {}个解", state.0.len());
                     }
                 }
                 ctx.request_repaint();
@@ -261,45 +252,17 @@ impl Sum3App {
     }
 
     fn stop_computation(&mut self) {
-        if let Some(sender) = self.cancel_sender.take() {
-            let _ = sender.send(());
-            self.computing = false;
-            self.status = "计算已停止".to_string();
-        }
+        self.stop_flag.store(true, Ordering::Relaxed);
+        let mut state = self.shared_state.lock().unwrap();
+        state.3 = false;
+        state.2 = "计算已停止".to_string();
+        self.computing = false;
+        self.status = "计算已停止".to_string();
+        println!("计算已停止");
     }
 }
 
 fn main() {
-    // 添加命令行参数支持
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() > 1 && args[1] == "--test" {
-        // 命令行测试模式
-        println!("运行命令行测试模式...");
-        let numbers = vec![4.5, 5.5, 6.0, 7.5, 9.0, 10.5, 12.0];
-        let target = 15.0;
-        let tolerance = 0.1;
-        let max_length = 5;
-        
-        println!("测试数据: {:?}", numbers);
-        println!("目标值: {}, 误差: {}, 最大长度: {}", target, tolerance, max_length);
-        
-        let results = sum3_solver::find_combinations(
-            &numbers,
-            target,
-            tolerance,
-            None,
-            max_length,
-        );
-        
-        println!("找到 {} 个解:", results.len());
-        for (i, res) in results.iter().enumerate() {
-            let sum = res.iter().sum::<f64>();
-            println!("解 {}: {:?} (总和: {:.2})", i + 1, res, sum);
-        }
-        return;
-    }
-
-    // 正常GUI模式
     let options = eframe::NativeOptions::default();
     if let Err(e) = eframe::run_native(
         "数字组合求解器",

@@ -45,7 +45,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f47983a1084940ba9a39c077a8c63e55c619388be5476ac04c804cfbd1e63459"
 dependencies = [
  "accesskit",
- "hashbrown",
+ "hashbrown 0.15.2",
  "immutable-chunkmap",
 ]
 
@@ -57,7 +57,7 @@ checksum = "7329821f3bd1101e03a7d2e03bd339e3ac0dc64c70b4c9f9ae1949e3ba8dece1"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
- "hashbrown",
+ "hashbrown 0.15.2",
  "objc2 0.5.2",
  "objc2-app-kit",
  "objc2-foundation 0.2.2",
@@ -89,7 +89,7 @@ checksum = "24fcd5d23d70670992b823e735e859374d694a3d12bfd8dd32bd3bd8bedb5d81"
 dependencies = [
  "accesskit",
  "accesskit_consumer",
- "hashbrown",
+ "hashbrown 0.15.2",
  "paste",
  "static_assertions",
  "windows",
@@ -1377,7 +1377,7 @@ checksum = "dcf29e94d6d243368b7a56caa16bc213e4f9f8ed38c4d9557069527b5d5281ca"
 dependencies = [
  "bitflags 2.9.0",
  "gpu-descriptor-types",
- "hashbrown",
+ "hashbrown 0.15.2",
 ]
 
 [[package]]
@@ -1387,6 +1387,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fdf242682df893b86f33a73828fb09ca4b2d3bb6cc95249707fc684d27484b91"
 dependencies = [
  "bitflags 2.9.0",
+]
+
+[[package]]
+name = "hashbrown"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43a3c133739dddd0d2990f9a4bdf8eb4b21ef50e4851ca85ab661199821d510e"
+dependencies = [
+ "ahash",
 ]
 
 [[package]]
@@ -1599,7 +1608,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3954d50fe15b02142bf25d3b8bdadb634ec3948f103d04ffe3031bc8fe9d7058"
 dependencies = [
  "equivalent",
- "hashbrown",
+ "hashbrown 0.15.2",
 ]
 
 [[package]]
@@ -1738,6 +1747,15 @@ name = "log"
 version = "0.4.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13dc2df351e3202783a1fe0d44375f7295ffb4049267b0f3018346dc122a1d94"
+
+[[package]]
+name = "lru"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "718e8fae447df0c7e1ba7f5189829e63fd536945c8988d61444c19039f16b670"
+dependencies = [
+ "hashbrown 0.13.2",
+]
 
 [[package]]
 name = "malloc_buf"
@@ -2762,6 +2780,8 @@ dependencies = [
  "csv",
  "eframe",
  "egui",
+ "lru",
+ "once_cell",
  "rayon",
  "rfd",
 ]
