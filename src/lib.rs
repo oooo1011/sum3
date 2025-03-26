@@ -11,6 +11,9 @@ pub fn find_combinations(
     progress_tx: Option<crossbeam_channel::Sender<f64>>,
     max_length: usize,
 ) -> Vec<Vec<f64>> {
+    println!("输入数字: {:?}", numbers);
+    println!("目标和: {}, 误差: {}, 最大长度: {}", target, tolerance, max_length);
+    
     let results = Arc::new(Mutex::new(Vec::new()));
     let _total = numbers.len();
     let max_results = 1000; // 限制最大结果数量
@@ -19,6 +22,7 @@ pub fn find_combinations(
     // 先排序数字以便更高效搜索
     let mut sorted_numbers = numbers.to_vec();
     sorted_numbers.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    println!("排序后数字: {:?}", sorted_numbers);
 
     // 并行回溯函数
     fn parallel_backtrack(
@@ -34,10 +38,14 @@ pub fn find_combinations(
         total: usize,
         progress: &Arc<Mutex<usize>>,
     ) {
+        // 检查当前路径是否满足条件
         let sum = path.iter().sum::<f64>();
         let diff = (sum - target).abs();
         
-        if diff <= tolerance && !path.is_empty() {
+        // 允许单元素解
+        if (diff <= tolerance && !path.is_empty()) || 
+           (path.len() == 1 && diff <= tolerance) {
+            println!("找到解: {:?} (总和: {:.2})", path, sum);
             let mut results = results.lock().unwrap();
             if results.len() < max_results {
                 results.push(path.clone());
@@ -50,16 +58,9 @@ pub fn find_combinations(
 
         // 并行处理分支
         (start..nums.len()).into_par_iter().for_each(|i| {
-            // 剪枝：如果当前路径和加上剩余最小数仍超过目标值+tolerance，则跳过
-            let min_remaining = if i + 1 < nums.len() { nums[i + 1] } else { 0.0 };
-            let potential_min = path.iter().sum::<f64>() + nums[i] + min_remaining;
-            if potential_min > target + tolerance {
-                return;
-            }
-
-            // 剪枝：如果当前路径和加上当前数已经远小于目标值-tolerance，则继续
-            let potential_max = path.iter().sum::<f64>() + nums[i] + nums[nums.len() - 1];
-            if potential_max < target - tolerance {
+            // 更宽松的剪枝条件
+            let current_sum = path.iter().sum::<f64>();
+            if current_sum + nums[i] > target + tolerance {
                 return;
             }
 
@@ -91,8 +92,8 @@ pub fn find_combinations(
     }
 
     let progress = Arc::new(Mutex::new(0));
-    // 更精确的总工作量估算(考虑剪枝优化后的情况)
-    let total = numbers.len().pow(2).min(100_000); // 设置上限防止溢出
+    // 简化进度计算
+    let total = numbers.len();
     let mut path = Vec::new();
     
     parallel_backtrack(
@@ -104,11 +105,23 @@ pub fn find_combinations(
     Arc::try_unwrap(results).unwrap().into_inner().unwrap()
 }
 
-/// 从CSV文件读取数字
+/// 从CSV文件读取数字(支持单列和多列格式)
 pub fn read_numbers_from_csv(path: &str) -> Result<Vec<f64>, Box<dyn Error>> {
+    let content = std::fs::read_to_string(path)?;
+    
+    // 先尝试按行解析(单列CSV)
+    let line_numbers: Vec<f64> = content
+        .lines()
+        .filter_map(|line| line.trim().parse::<f64>().ok())
+        .collect();
+    
+    if !line_numbers.is_empty() {
+        return Ok(line_numbers);
+    }
+    
+    // 如果按行解析没有数据，尝试标准CSV解析(多列)
     let mut rdr = csv::Reader::from_path(path)?;
     let mut numbers = Vec::new();
-    
     for result in rdr.records() {
         let record = result?;
         for field in record.iter() {

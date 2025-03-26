@@ -15,6 +15,7 @@ struct Sum3App {
     show_all: bool,
     error: Option<String>,
     cancel_sender: Option<mpsc::Sender<()>>,
+    shared_state: Arc<Mutex<(Vec<Vec<f64>>, f32, String, bool)>>,
 }
 
 impl Default for Sum3App {
@@ -31,12 +32,22 @@ impl Default for Sum3App {
             show_all: false,
             error: None,
             cancel_sender: None,
+            shared_state: Arc::new(Mutex::new((Vec::new(), 0.0, "就绪".to_string(), false))),
         }
     }
 }
 
 impl eframe::App for Sum3App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 同步共享状态并立即释放锁
+        {
+            let state = self.shared_state.lock().unwrap();
+            self.results = state.0.clone();
+            self.progress = state.1;
+            self.status = state.2.clone();
+            self.computing = state.3;
+        }
+
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("数字组合求解器");
             
@@ -47,28 +58,26 @@ impl eframe::App for Sum3App {
 
             // 文件导入区域
             ui.horizontal(|ui| {
-                if ui.button("导入CSV文件").clicked() {
+                if ui.button("导入数字文件").clicked() {
                     if let Some(path) = rfd::FileDialog::new().pick_file() {
-                        match read_numbers_from_csv(path.to_str().unwrap()) {
+                        let path_str = path.to_str().unwrap();
+                        let result = if path_str.ends_with(".csv") {
+                            read_numbers_from_csv(path_str)
+                        } else {
+                            read_numbers_from_txt(path_str)
+                        };
+                        
+                        match result {
                             Ok(nums) => {
                                 self.numbers = nums;
                                 self.status = format!("已导入 {} 个数字", self.numbers.len());
                                 self.error = None;
+                                println!("成功导入 {} 个数字: {:?}", self.numbers.len(), self.numbers);
                             }
-                            Err(e) => self.error = Some(format!("导入错误: {}", e)),
-                        }
-                    }
-                }
-                
-                if ui.button("导入TXT文件").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().pick_file() {
-                        match read_numbers_from_txt(path.to_str().unwrap()) {
-                            Ok(nums) => {
-                                self.numbers = nums;
-                                self.status = format!("已导入 {} 个数字", self.numbers.len());
-                                self.error = None;
+                            Err(e) => {
+                                self.error = Some(format!("导入错误: {}", e));
+                                eprintln!("导入错误: {}", e);
                             }
-                            Err(e) => self.error = Some(format!("导入错误: {}", e)),
                         }
                     }
                 }
@@ -174,15 +183,20 @@ impl Sum3App {
                 let (result_tx, result_rx) = mpsc::channel();
                 
                 // 计算线程
-                thread::spawn(move || {
-                    let results = find_combinations(
-                        &numbers,
-                        target,
-                        tolerance,
-                        Some(progress_tx),
-                        max_length,
-                    );
-                    result_tx.send(results).unwrap();
+                thread::spawn({
+                    let numbers = numbers.clone();
+                    move || {
+                        println!("计算线程启动"); // 添加调试输出
+                        let results = find_combinations(
+                            &numbers,
+                            target,
+                            tolerance,
+                            Some(progress_tx),
+                            max_length,
+                        );
+                        println!("计算完成，找到{}个解", results.len()); // 添加调试输出
+                        result_tx.send(results).unwrap();
+                    }
                 });
 
                 // 进度更新线程
@@ -216,7 +230,6 @@ impl Sum3App {
             }
         });
 
-        let ctx_clone = ctx.clone();
         ctx.request_repaint_after(std::time::Duration::from_millis(100));
 
         enum ComputationMessage {
@@ -224,38 +237,27 @@ impl Sum3App {
             Results(Vec<Vec<f64>>),
         }
 
-        let shared_state = Arc::new(Mutex::new((
-            self.results.clone(),
-            self.progress,
-            self.status.clone(),
-            self.computing,
-        )));
-
-        let state_clone = shared_state.clone();
+        // 使用App结构体中的共享状态
+        let state_clone = self.shared_state.clone();
         thread::spawn(move || {
             while let Ok(msg) = rx.recv() {
                 let mut state = state_clone.lock().unwrap();
                 match msg {
                     ComputationMessage::Progress(p) => {
                         state.1 = p as f32;
+                        println!("进度更新: {:.2}%", p * 100.0);
                     }
                     ComputationMessage::Results(results) => {
                         state.0 = results;
                         state.1 = 1.0;
                         state.2 = format!("找到 {} 个解", state.0.len());
                         state.3 = false;
+                        println!("收到计算结果: {}个解", state.0.len());
                     }
                 }
-                ctx_clone.request_repaint();
+                ctx.request_repaint();
             }
         });
-
-        // 在主线程中更新UI状态
-        let state = shared_state.lock().unwrap();
-        self.results = state.0.clone();
-        self.progress = state.1;
-        self.status = state.2.clone();
-        self.computing = state.3;
     }
 
     fn stop_computation(&mut self) {
@@ -268,6 +270,36 @@ impl Sum3App {
 }
 
 fn main() {
+    // 添加命令行参数支持
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() > 1 && args[1] == "--test" {
+        // 命令行测试模式
+        println!("运行命令行测试模式...");
+        let numbers = vec![4.5, 5.5, 6.0, 7.5, 9.0, 10.5, 12.0];
+        let target = 15.0;
+        let tolerance = 0.1;
+        let max_length = 5;
+        
+        println!("测试数据: {:?}", numbers);
+        println!("目标值: {}, 误差: {}, 最大长度: {}", target, tolerance, max_length);
+        
+        let results = sum3_solver::find_combinations(
+            &numbers,
+            target,
+            tolerance,
+            None,
+            max_length,
+        );
+        
+        println!("找到 {} 个解:", results.len());
+        for (i, res) in results.iter().enumerate() {
+            let sum = res.iter().sum::<f64>();
+            println!("解 {}: {:?} (总和: {:.2})", i + 1, res, sum);
+        }
+        return;
+    }
+
+    // 正常GUI模式
     let options = eframe::NativeOptions::default();
     if let Err(e) = eframe::run_native(
         "数字组合求解器",
